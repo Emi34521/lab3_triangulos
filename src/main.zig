@@ -1,37 +1,54 @@
 const std = @import("std");
-const Io = std.Io;
-
-const lab3_triangulos = @import("lab3_triangulos");
+const builtin = @import("builtin");
 
 const rl = @import("raylib");
+const Framebuffer = @import("framebuffer.zig").Framebuffer;
 
-pub fn main() anyerror!void {
-    // Initialization
-    //--------------------------------------------------------------------------------------
-    const screenWidth = 800;
-    const screenHeight = 450;
+const htmlColor = @import("cute_colors.zig").htmlColor;
 
-    rl.initWindow(screenWidth, screenHeight, "raylib-zig [core] example - basic window");
-    defer rl.closeWindow(); // Close window and OpenGL context
+const Clock = std.Io.Clock.real;
 
-    rl.setTargetFPS(60); // Set our game to run at 60 frames-per-second
-    //--------------------------------------------------------------------------------------
+const width = 1300;
+const height = 900;
 
-    // Main game loop
-    while (!rl.windowShouldClose()) { // Detect window close button or ESC key
-        // Update
-        //----------------------------------------------------------------------------------
-        // TODO: Update your variables here
-        //----------------------------------------------------------------------------------
+const block_sz: i32 = 100;
 
-        // Draw
-        //----------------------------------------------------------------------------------
-        rl.beginDrawing();
-        defer rl.endDrawing();
+pub fn main() !void {
+    var alloc = switch (builtin.mode) {
+        .Debug, .ReleaseSafe => std.heap.DebugAllocator(.{}).init,
+        .ReleaseFast, .ReleaseSmall => std.heap.smp_allocator,
+    };
+    const gpa: std.mem.Allocator = switch (builtin.mode) {
+        .Debug, .ReleaseSafe => alloc.allocator(),
+        .ReleaseFast, .ReleaseSmall => std.heap.smp_allocator,
+    };
+    defer switch (builtin.mode) {
+        .Debug, .ReleaseSafe => _ = alloc.deinit(),
+        .ReleaseFast, .ReleaseSmall => {},
+    };
 
-        rl.clearBackground(.white);
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    const io = threaded.io();
+    var framebuffer = Framebuffer.init(width, height, .black, .white);
 
-        rl.drawText("Congrats! You created your first window!", 190, 200, 20, .light_gray);
-        //----------------------------------------------------------------------------------
+    rl.initWindow(width, height, "Raytracer!!!");
+    rl.setTraceLogLevel(.warning);
+    defer rl.closeWindow();
+    rl.setTargetFPS(30);
+
+    var last_frame_time = Clock.now(io);
+    var delta: i64 = 1;
+
+    while (!rl.windowShouldClose()) {
+        defer {
+            const now = Clock.now(io);
+            delta = last_frame_time.durationTo(now).toMicroseconds();
+            last_frame_time = now;
+        }
+        framebuffer.clear();
+
+        const dt: f32 = @as(f32, @floatFromInt(delta)) / 1_000_000;
+
+        try framebuffer.swap_buffers();
     }
 }

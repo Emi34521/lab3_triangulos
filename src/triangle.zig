@@ -1,140 +1,131 @@
 const rl = @import("raylib");
 const std = @import("std");
+const Framebuffer = @import("framebuffer.zig").Framebuffer;
 
-// True: el triángulo se colorea con colores RGB según las coordenadas baricéntricas,
-// False: se colorea con el color del material
-const barycentric_color = false;
-//valor más pequeño que puede tener un float, para evitar errores de precisión
-const epsilon = std.math.floatEps(f32);
-// valor mínimo de t para que se considere una intersección válida, para evitar que el rayo rebote en la misma superficie
-const t_min: f32 = 1e-4;
+// Si el área total es menor a este valor, el triángulo es degenerado (puntos colineales) y no se dibuja
+const epsilon: f32 = 1e-6;
+// Pequeño margen para no dejar píxeles sin pintar justo en los bordes
+const margen: f32 = 1e-4;
 
 pub const Triangle = struct {
     puntos: struct {
+        A: rl.Vector2,
+        B: rl.Vector2,
+        C: rl.Vector2,
+    },
+    // Color de cada vértice como RGB con valores entre 0 y 1
+    colores: struct {
         A: rl.Vector3,
         B: rl.Vector3,
         C: rl.Vector3,
     },
-    // coordenadas de textura, si no se especifican se asume que el triángulo es un triángulo rectángulo con la esquina superior izquierda
-    // en A y la esquina inferior derecha en B
-    uvs: struct {
-        A: rl.Vector2 = .{ .x = 0, .y = 0 },
-        B: rl.Vector2 = .{ .x = 1, .y = 0 },
-        C: rl.Vector2 = .{ .x = 0, .y = 1 },
-    } = .{},
-    // material del triángulo
-    // si es true, el normal del triángulo se invierte si está apuntando hacia el rayo, esto es útil para que los triángulos sean "unilaterales"
-    normal_hacia_rayo: bool = true,
 
-    // Resultado del núcleo de Möller–Trumbore solo lo necesario para saber donde golpeó el rayo.
-    // No trae normal, uv ni material (.
-    pub const Golpe = struct {
-        // distancia desde el origen del rayo hasta el punto de intersección
-        t: f32,
-        // coordenadas baricéntricas: b0 pesa al vértice A, b1 al B y b2 al C. Siempre suman 1.
-        // Sirven para interpolar cualquier dato de los vértices (uvs, normales...) en el punto de intersección.
-        b0: f32,
-        b1: f32,
-        b2: f32,
+    // Pesos baricéntricos: a pesa al vértice A, b al B y c al C deben sumar 1.
+    pub const Pesos = struct {
+        a: f32,
+        b: f32,
+        c: f32,
     };
 
-    // Aquí es donde hay cambios importantes. Originalmente este intersecto se calcula mediante el área de los triángulos formados
-    // por el punto de intersección y los vértices del triángulo. Y está bien, no obstante, este método es un poco más lento
-    // debido a esto, claude me recomendó utilizar el método de Möller–Trumbore. No lo quise implementar hasta que, al investigarlo, se me hizo
-    // intereseante y decidí implementarlo. https://www.youtube.com/watch?v=fK1RPmF_zjQ video que explica más afondo el método.
-
-    // Núcleo de Möller–Trumbore. Solo recibe los tres puntos, por lo que también lo puede usar Modelo para probar
-    // cada una de sus caras sin armar un Triangle con material por cada una.
-    pub fn mollerTrumbore(origin: rl.Vector3, direction: rl.Vector3, A: rl.Vector3, B: rl.Vector3, C: rl.Vector3) ?Golpe {
-        // Möller–Trumbore algorithm
-
-        // paso 1: calcular los vectores de los lados del triángulo
-        // básicamente se calculan los vectores que van desde el vértice A hasta los vértices B y C
-        const e1 = B.subtract(A);
-        const e2 = C.subtract(A);
-
-        // paso 2: calcular el determinante
-        // el determinante nos dice si el rayo es paralelo al triángulo o no
-        // si el determinante es cercano a 0, el rayo es paralelo al triángulo y no hay intersección
-        // el determinante se calcula mediante el producto cruzado de los vectores e1 y e2, y luego se calcula
-        // el producto punto con el vector de dirección del rayo
-
-        const p = direction.crossProduct(e2);
-        const det = e1.dotProduct(p);
-        if (@abs(det) < epsilon) return null;
-        const inv_det = 1.0 / det;
-
-        // paso 3: calcular la coordenada baricéntrica b1
-        // b1 nos dice si el punto de intersección está dentro del triángulo
-        // para eso el b1 debe estar entre 0 y 1, si no lo está, el punto de intersección está fuera del triángulo
-        const s = origin.subtract(A);
-        const b1 = s.dotProduct(p) * inv_det;
-        if (b1 < 0 or b1 > 1) return null;
-
-        // paso 4: calcular la coordenada baricéntrica b2
-        // b2 nos dice si el punto de intersección está dentro del triángulo
-        // para eso el b2 debe ser mayor que 0 y la suma de b1 y b1 debe ser menor a 1. De lo contrario, está fuera del triángulo.
-        const q = s.crossProduct(e1);
-        const b2 = direction.dotProduct(q) * inv_det;
-        if (b2 < 0 or b1 + b2 > 1) return null;
-
-        // paso 5: calcular la distancia t desde el origen del rayo hasta el punto de intersección
-        // si t es menor que t_min, el punto de intersección está demasiado cerca del origen del rayo y se considera que no hay intersección
-        const t = e2.dotProduct(q) * inv_det;
-        if (t < t_min) return null;
-
-        // paso 6: calcular la coordenada baricéntrica b0
-        // b0 nos dice si el punto de intersección está dentro del triángulo
-        // no hace falta calcularlo debido a que b0, b1 y b2 deben de sumar 1 al ser una proporción. entonces se puede ahorrar el cálculo.
-        const b0 = 1 - b1 - b2;
-
-        return .{ .t = t, .b0 = b0, .b1 = b1, .b2 = b2 };
+    pub fn init(
+        a: rl.Vector2,
+        b: rl.Vector2,
+        c: rl.Vector2,
+        color_a: rl.Vector3,
+        color_b: rl.Vector3,
+        color_c: rl.Vector3,
+    ) Triangle {
+        return .{
+            .puntos = .{ .A = a, .B = b, .C = c },
+            .colores = .{ .A = color_a, .B = color_b, .C = color_c },
+        };
     }
 
-    pub fn intersect(self: Triangle, origin: rl.Vector3, direction: rl.Vector3) ?Intersect {
-        // pasos 1 al 6: el núcleo de Möller–Trumbore (ver mollerTrumbore). Si el rayo no golpea el triángulo, no hay nada más que hacer.
-        const golpe = Triangle.mollerTrumbore(origin, direction, self.puntos.A, self.puntos.B, self.puntos.C) orelse return null;
-        const t = golpe.t;
-        const b0 = golpe.b0;
-        const b1 = golpe.b1;
-        const b2 = golpe.b2;
+    // Área del triángulo PQR multiplicada por 2 y con signo
+    // El signo depende de si los puntos van en sentido horario o antihorario.
+    // Como los pesos son un cociente entre dos de estas áreas, el signo se cancela
+    // y no importa en qué orden se den los vértices.
+    // Básicamente forma 2 vectores. El PQ y el PR y luego se saca el determinante para
+    // conseguir 2(área) pero conservando el signo. esto será importante para determinar
+    // el peso y si está dentro del triángulo o no.
 
-        // paso 7: calcular el normal del triángulo
-        // el normal del triángulo se calcula mediante el producto cruzado de los vectores
-        // que van desde el vértice A hasta los vértices B y C.
-        const e1 = self.puntos.B.subtract(self.puntos.A);
-        const e2 = self.puntos.C.subtract(self.puntos.A);
-        var normal = e1.crossProduct(e2).normalize();
-        if (self.normal_hacia_rayo and normal.dotProduct(direction) > 0) {
-            // si el normal está apuntando hacia el rayo, se invierte para que apunte en la dirección opuesta
-            normal = normal.scale(-1);
-        }
-        // paso 8: calcular las coordenadas de textura
-        // las coordenadas de textura se calculan mediante la interpolación de las coordenadas de textura de los vértices del triángulo
-        // utilizando las coordenadas baricéntricas b0, b1 y b2. Esto nos da las coordenadas de textura del punto de intersección.
-        const uv: rl.Vector2 = .{
-            .x = b0 * self.uvs.A.x + b1 * self.uvs.B.x + b2 * self.uvs.C.x,
-            .y = b0 * self.uvs.A.y + b1 * self.uvs.B.y + b2 * self.uvs.C.y,
+    fn area2(p: rl.Vector2, q: rl.Vector2, r: rl.Vector2) f32 {
+        return (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+    }
+
+    // Devuelve los pesos baricéntricos de P, o null si P está fuera del triángulo
+    pub fn pesos(self: Triangle, p: rl.Vector2) ?Pesos {
+        const A = self.puntos.A;
+        const B = self.puntos.B;
+        const C = self.puntos.C;
+
+        // el primero lo hice manualmente, pero sigue la misma lógica. Hacer 2 vectores y obtener el determiante para
+        // conseguir el área.
+        const total = (B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x);
+        if (@abs(total) < epsilon) return null;
+
+        // El peso de un vértice es el área del sub triángulo opuesto a ese vértice
+        const w: Pesos = .{
+            .a = area2(p, B, C) / total, // BPC
+            .b = area2(A, p, C) / total, // APC
+            .c = area2(A, B, p) / total, // ABP
         };
 
-        // se devuelve la interseeción con el material
-        var material = self.Material;
-        // si barycentric_color es true, se colorea el triángulo con colores RGB según las coordenadas baricéntricas
-        if (barycentric_color) {
-            const rojo = (rl.Vector3{ .x = 1, .y = 0, .z = 0 }).scale(b0);
-            const verde = (rl.Vector3{ .x = 0, .y = 1, .z = 0 }).scale(b1);
-            const azul = (rl.Vector3{ .x = 0, .y = 0, .z = 1 }).scale(b2);
-            material.Color = .{ .Color = rojo.add(verde).add(azul) };
-        }
+        // Si algún peso es negativo P está fuera del triángulo retorna null
+        if (w.a < -margen or w.b < -margen or w.c < -margen) return null;
+        return w;
+    }
 
-        return .{
-            .Material = material,
-            .Distancia = t,
-            .Normal = normal,
-            .Punto = origin.add(direction.scale(t)),
-            .uv = uv,
+    // Interpola los colores de los vértices con los pesos y lo convierte a rl.Color con la
+    // función reutilizada del raycast.
+    pub fn colorEn(self: Triangle, w: Pesos) rl.Color {
+        const c = self.colores;
+        const color_pesos: rl.Vector3 = .{
+            .x = (w.a * c.A.x + w.b * c.B.x + w.c * c.C.x),
+            .y = (w.a * c.A.y + w.b * c.B.y + w.c * c.C.y),
+            .z = (w.a * c.A.z + w.b * c.B.z + w.c * c.C.z),
         };
+        return V3ToColor(color_pesos);
+    }
+
+    // reutilicé la función del raytracer, como ya no es necesario el raytracer, únicamente tomé esa función.
+    pub fn V3ToColor(color: rl.Vector3) rl.Color {
+        const r: u8 = @intFromFloat(@max(0, @min(255, color.x * 255)));
+        const g: u8 = @intFromFloat(@max(0, @min(255, color.y * 255)));
+        const b: u8 = @intFromFloat(@max(0, @min(255, color.z * 255)));
+        return .{ .r = r, .g = g, .b = b, .a = 0xff };
+    }
+
+    // esta parta ya dibuja el triángulo en la pantalla y toma el puntero de framebuffer.
+    pub fn draw(self: Triangle, fb: *Framebuffer) !void {
+        const A = self.puntos.A;
+        const B = self.puntos.B;
+        const C = self.puntos.C;
+
+        const x_max: f32 = @floatFromInt(fb.width - 1);
+        const y_max: f32 = @floatFromInt(fb.height - 1);
+
+        // Caja delimitadora del triángulo, recortada a la pantalla.
+        // Es necesario porque set_pixel da error si x o y se salen del framebuffer.
+        const min_x: i32 = @intFromFloat(std.math.clamp(@floor(@min(A.x, B.x, C.x)), 0, x_max));
+        const max_x: i32 = @intFromFloat(std.math.clamp(@ceil(@max(A.x, B.x, C.x)), 0, x_max));
+        const min_y: i32 = @intFromFloat(std.math.clamp(@floor(@min(A.y, B.y, C.y)), 0, y_max));
+        const max_y: i32 = @intFromFloat(std.math.clamp(@ceil(@max(A.y, B.y, C.y)), 0, y_max));
+
+        // luego recorre todo para dibujar los pixeles coon ayuda del framebuffer.
+        var y = min_y;
+        while (y <= max_y) : (y += 1) {
+            var x = min_x;
+            while (x <= max_x) : (x += 1) {
+                // Se evalúa en el centro del píxel
+                const p: rl.Vector2 = .{
+                    .x = @as(f32, @floatFromInt(x)) + 0.5,
+                    .y = @as(f32, @floatFromInt(y)) + 0.5,
+                };
+                if (self.pesos(p)) |w| {
+                    try fb.set_pixel(x, y, self.colorEn(w));
+                }
+            }
+        }
     }
 };
-// información adicional algoritmo Möller–Trumbore: https://en.wikipedia.org/wiki/Möller%E2%80%93Trumbore_intersection_algorithm
-// https://trslater.ca/blog-base-two/2023/08/15/mollertrumbore-photorealistic-lighting-starts-with-a-ray-and-a-triangle/

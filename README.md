@@ -10,3 +10,18 @@ Desde la raíz del proyecto:
 zig version
 zig build
 zig build run
+```
+
+Para ejecutar las pruebas existentes:
+
+```powershell
+zig build test
+```
+
+La primera compilación necesita internet para descargar las dependencias.
+Zig administra la carpeta `zig-pkg/`; no hace falta editarla ni subirla a Git.
+
+No vuelvas a ejecutar `zig fetch --save ...#devel` para este proyecto:
+esa rama avanza con las versiones de desarrollo de Zig y la revisión que
+causó los errores requiere Zig 0.17.0. Los errores sobre `findProgram`,
+`Build.root` y `serializeConfigurationExiting` se debían a esa incompatibilidad.
